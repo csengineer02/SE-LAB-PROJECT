@@ -1,229 +1,85 @@
 <?php
-require_once __DIR__ . '/includes/public_header.php';
-require_once __DIR__ . '/includes/db.php';
+require_once __DIR__ . '/../includes/public_header.php';
+require_once __DIR__ . '/../includes/db.php';
+require_once __DIR__ . '/rider_auth.php';
 
-$role = $_GET['role'] ?? '';
-$allowed = ['shop_owner','employee','customer'];
-
-if (!in_array($role, $allowed, true)) {
-    flash_set('error', 'Please choose a role to sign up.');
-    redirect('/index.php');
-    exit;
+if (rider_logged_in()) {
+    redirect('/delivery_rider/dashboard.php');
 }
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
-
-    $name     = trim($_POST['name'] ?? '');
-    $phone    = trim($_POST['phone'] ?? '');
-    $nid      = trim($_POST['nid'] ?? '');
-    $address  = trim($_POST['address'] ?? '');
+    $name = trim($_POST['name'] ?? '');
+    $phone = trim($_POST['phone'] ?? '');
     $password = $_POST['password'] ?? '';
-    $shopid   = (int)($_POST['shopid'] ?? 0);
+    $active = 'Active';
 
-    //  Basic validation
-    if ($phone === '' || $password === '' || $nid === '') {
-        flash_set('error', 'Phone, NID and password are required.');
-        redirect('/signup.php?role=' . urlencode($role));
-        exit;
-    }
-
-    // Phone format (Bangladesh example)
-    if (!preg_match('/^01[0-9]{9}$/', $phone)) {
-        flash_set('error', 'Invalid phone number format.');
-        redirect('/signup.php?role=' . urlencode($role));
-        exit;
-    }
-
-    // Password length
-    if (strlen($password) < 6) {
-        flash_set('error', 'Password must be at least 6 characters.');
-        redirect('/signup.php?role=' . urlencode($role));
-        exit;
+    if ($name === '' || $phone === '' || $password === '') {
+        flash_set('error', 'Name, phone and password are required.');
+        redirect('/delivery_rider/signup.php');
     }
 
     try {
         $pdo = db();
-        $pdo->beginTransaction();
-
-        // Check if phone already exists
-        $st = $pdo->prepare('SELECT id FROM users WHERE phone = ? LIMIT 1');
+        // Prevent duplicate phone
+        $st = $pdo->prepare('SELECT rider_id FROM deliveryrider WHERE phone=? LIMIT 1');
         $st->execute([$phone]);
-
-        if ($st->fetch()) {
-            flash_set('error', 'This phone is already registered.');
-            $pdo->rollBack();
-            redirect('/signup.php?role=' . urlencode($role));
-            exit;
+        if ($st->fetchColumn()) {
+            flash_set('error', 'Phone already registered.');
+            redirect('/delivery_rider/signup.php');
         }
 
-        //  Insert into users table
-        $hash = password_hash($password, PASSWORD_BCRYPT);
+        $hash = password_hash($password, PASSWORD_DEFAULT);
+        $st = $pdo->prepare('INSERT INTO deliveryrider (name, phone, active_status, password) VALUES (?,?,?,?)');
+        $st->execute([$name, $phone, $active, $hash]);
 
-        $st = $pdo->prepare(
-            'INSERT INTO users (name, nid, phone, password_hash, role, is_active)
-             VALUES (?, ?, ?, ?, ?, 1)'
-        );
-
-        $st->execute([
-            $name ?: $phone,
-            $nid,
-            $phone,
-            $hash,
-            $role
-        ]);
-
-        $userId = (int)$pdo->lastInsertId();
-
-        //  Role-based inserts (NO password duplication)
-        if ($role === 'customer') {
-            $st = $pdo->prepare(
-                'INSERT INTO customer (id, name, phone, address, nid)
-                 VALUES (?, ?, ?, ?, ?)'
-            );
-            $st->execute([
-                $userId,
-                $name ?: null,
-                $phone,
-                $address ?: 'Dhaka, Bangladesh',
-                $nid
-            ]);
-        }
-
-        if ($role === 'shop_owner') {
-            $st = $pdo->prepare(
-                'INSERT INTO shopowner (id, name, phone, nid, Adminid)
-                 VALUES (?, ?, ?, ?, ?)'
-            );
-            $st->execute([
-                $userId,
-                $name ?: null,
-                $phone,
-                $nid,
-                1 // consider making dynamic later
-            ]);
-        }
-
-        if ($role === 'employee') {
-
-            if ($shopid <= 0) {
-                flash_set('error', 'Please provide a valid Shop ID.');
-                $pdo->rollBack();
-                redirect('/signup.php?role=employee');
-                exit;
-            }
-
-            $st = $pdo->prepare(
-                'INSERT INTO employee (id, name, phone, nid, active, shopid, roleid)
-                 VALUES (?, ?, ?, ?, ?, ?, ?)'
-            );
-
-            $st->execute([
-                $userId,
-                $name ?: null,
-                $phone,
-                $nid,
-                'active',
-                $shopid,
-                1
-            ]);
-        }
-
-        // Commit all changes
-        $pdo->commit();
-
-        flash_set('success', 'Account created. Please login.');
-        redirect('/login.php');
-        exit;
-
+        // IMPORTANT: Signup should create the account only.
+        // Rider must login to access the rider dashboard (consistent with other roles).
+        flash_set('success', 'Signup successful. Please login to continue.');
+        redirect('/delivery_rider/login.php');
     } catch (Throwable $e) {
-        if ($pdo->inTransaction()) {
-            $pdo->rollBack();
-        }
-
-        flash_set('error', 'Signup failed: ' . $e->getMessage());
-        redirect('/signup.php?role=' . urlencode($role));
-        exit;
+        flash_set('error', 'Signup failed. Please try again.');
+        redirect('/delivery_rider/signup.php');
     }
 }
 
-$title = 'Sign up';
+$title = "Delivery Rider Signup";
 ?>
 
-<div class="row justify-content-center">
-  <div class="col-md-9 col-lg-6">
-    <div class="app-card">
-      <div class="app-card-header">
-        <div class="app-chip mb-2">
-          <i class="bi bi-person-plus"></i> Create account
+<div class="container py-4" style="max-width:520px">
+  <div class="card">
+    <div class="card-body">
+      <h3 class="mb-1">Delivery Rider Signup</h3>
+      <p class="text-muted mb-3">Create your rider account.</p>
+
+      <?php if ($msg = flash_get('error')): ?>
+        <div class="alert alert-danger"><?= h($msg) ?></div>
+      <?php endif; ?>
+      <?php if ($msg = flash_get('success')): ?>
+        <div class="alert alert-success"><?= h($msg) ?></div>
+      <?php endif; ?>
+
+      <form method="post" class="row g-3">
+        <div class="col-12">
+          <label class="form-label">Full Name</label>
+          <input class="form-control" name="name" required>
         </div>
-
-        <h1 class="h4 fw-bold mb-1">
-          Sign up as <?= h(str_replace('_',' ', $role)) ?>
-        </h1>
-
-        <p class="text-muted mb-0">
-          Complete the form to continue.
-        </p>
-      </div>
-
-      <div class="app-card-body">
-        <form method="post" class="row g-3">
-
-          <div class="col-12">
-            <label class="form-label">Name</label>
-            <input class="form-control" name="name" placeholder="Your name" />
-          </div>
-
-          <div class="col-12">
-            <label class="form-label">Phone *</label>
-            <input class="form-control" name="phone" required placeholder="01XXXXXXXXX" />
-          </div>
-
-          <div class="col-12">
-            <label class="form-label">NID *</label>
-            <input class="form-control" name="nid" required />
-          </div>
-
-          <?php if ($role === 'customer'): ?>
-          <div class="col-12">
-            <label class="form-label">Address</label>
-            <input class="form-control" name="address" />
-          </div>
-          <?php endif; ?>
-
-          <?php if ($role === 'employee'): ?>
-          <div class="col-12">
-            <label class="form-label">Shop ID *</label>
-            <input class="form-control" name="shopid" required />
-          </div>
-          <?php endif; ?>
-
-          <div class="col-12">
-            <label class="form-label">Password *</label>
-            <input class="form-control" name="password" type="password" required />
-          </div>
-
-          <div class="col-12 d-flex gap-2">
-            <button class="btn btn-success flex-grow-1" type="submit">
-              Create account
-            </button>
-
-            <a class="btn btn-outline-success" href="<?= BASE_URL ?>/index.php">
-              Back
-            </a>
-          </div>
-
-          <div class="col-12">
-            <div class="text-muted small">
-              Already have an account?
-              <a href="<?= BASE_URL ?>/login.php">Login</a>
-            </div>
-          </div>
-
-        </form>
+        <div class="col-12">
+          <label class="form-label">Phone</label>
+          <input class="form-control" name="phone" required placeholder="01XXXXXXXXX">
+        </div>
+        <div class="col-12">
+          <label class="form-label">Password</label>
+          <input class="form-control" name="password" type="password" required>
+        </div>
+        <div class="col-12 d-grid">
+          <button class="btn btn-success" type="submit">Create account</button>
+        </div>
+      </form>
+      <div class="mt-3 text-center">
+        <a href="<?= BASE_URL ?>/delivery_rider/login.php">Already have an account? Login</a>
       </div>
     </div>
   </div>
 </div>
 
-<?php require_once __DIR__ . '/includes/public_footer.php'; ?>
+<?php require_once __DIR__ . '/../includes/public_footer.php'; ?>
